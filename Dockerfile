@@ -6,11 +6,10 @@ ENV PGPASSWORD=postgres
 # Update packages
 RUN apt update; apt dist-upgrade -y
 
-# Install packages
+# Install packages (no Node.js needed)
 RUN apt install -y \
   postgresql \
   sudo \
-  vim \
   locales \
   wget \
   sbcl \
@@ -18,12 +17,7 @@ RUN apt install -y \
   gnupg \
   curl
 
-# Install Node
-RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
-    apt-get install -y \
-    nodejs
-
-# Download database and quicklist libraries, and jmdict dictionary
+# Download database and quicklisp libraries, and jmdict dictionary
 RUN wget https://github.com/tshatrov/ichiran/releases/download/ichiran-230122/ichiran-230122.pgdump
 RUN wget https://beta.quicklisp.org/quicklisp.lisp
 RUN wget https://beta.quicklisp.org/quicklisp.lisp.asc
@@ -42,23 +36,31 @@ RUN sbcl --load /quicklisp.lisp --eval '(quicklisp-quickstart:install)' --eval '
 # Download ichiran
 RUN cd /root/quicklisp/local-projects/ && git clone https://github.com/tshatrov/ichiran.git
 
-#Copy settings
+# Copy settings
 COPY ./settings.lisp /root/quicklisp/local-projects/ichiran/settings.lisp
 
-# Run postgresql server, create database, load database dump, and build ichiran-cli
+# Copy server files into ichiran's local-projects directory
+COPY ./ichiran-server.asd /root/quicklisp/local-projects/ichiran/ichiran-server.asd
+COPY ./server.lisp /root/quicklisp/local-projects/ichiran/server.lisp
+
+# Run postgresql server, create database, load database dump, and verify ichiran works
 RUN service postgresql start && \
   sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'postgres';" && \
   sudo -u postgres createdb -E 'UTF8' -l 'ja_JP.utf8' -T template0 ichiran-db && \
   sudo -u postgres pg_restore -c -d ichiran-db ichiran-230122.pgdump --no-owner --no-privileges || true && \
   sbcl --eval '(load "~/quicklisp/setup.lisp")' --eval '(ql:quickload :ichiran)' --eval '(ichiran/mnt:add-errata)' --eval '(ichiran/test:run-all-tests)' --eval '(sb-ext:quit)' && \
+  sbcl --eval '(load "~/quicklisp/setup.lisp")' --eval '(ql:quickload :ichiran-server)' --eval '(sb-ext:quit)' && \
+  service postgresql stop
+
+# Build ichiran-cli too (useful for debugging)
+RUN service postgresql start && \
   sbcl --eval '(load "~/quicklisp/setup.lisp")' --eval '(ql:quickload :ichiran/cli)' --eval '(ichiran/cli:build)' && \
   /root/quicklisp/local-projects/ichiran/ichiran-cli "一覧は最高だぞ" && \
   service postgresql stop
 
-RUN mkdir /home/server
-COPY ./server /home/server
-RUN npm i --prefix /home/server
+COPY ./start.sh /start.sh
+RUN chmod +x /start.sh
 
 EXPOSE 80
 
-CMD service postgresql start; npm run start --prefix /home/server
+CMD ["/start.sh"]
